@@ -1,0 +1,18 @@
+# Binaries
+soreaja-printer
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# OS / Editor artifacts
+.DS_Store
+.idea/
+.vscode/
