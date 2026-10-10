@@ -259,3 +259,37 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Errorf("Expected status 'ok', got %s", resp.Status)
 	}
 }
+
+func TestCORS_HeadersAndPreflight(t *testing.T) {
+	cfg := config.Load()
+	srv := NewServer(cfg, &mockPrinterService{})
+	router := srv.Routes()
+
+	// 1. Preflight OPTIONS request
+	reqOptions := httptest.NewRequest(http.MethodOptions, "/api/v1/print", nil)
+	wOptions := httptest.NewRecorder()
+	router.ServeHTTP(wOptions, reqOptions)
+
+	if wOptions.Code != http.StatusNoContent {
+		t.Fatalf("Expected status 204 for OPTIONS preflight, got %d", wOptions.Code)
+	}
+
+	if origin := wOptions.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
+		t.Errorf("Expected Access-Control-Allow-Origin '*', got %q", origin)
+	}
+	if methods := wOptions.Header().Get("Access-Control-Allow-Methods"); methods == "" {
+		t.Errorf("Expected Access-Control-Allow-Methods header to be set")
+	}
+	if headers := wOptions.Header().Get("Access-Control-Allow-Headers"); headers != "*" {
+		t.Errorf("Expected Access-Control-Allow-Headers '*', got %q", headers)
+	}
+
+	// 2. Normal GET request has CORS headers
+	reqGet := httptest.NewRequest(http.MethodGet, "/health", nil)
+	wGet := httptest.NewRecorder()
+	router.ServeHTTP(wGet, reqGet)
+
+	if origin := wGet.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
+		t.Errorf("Expected Access-Control-Allow-Origin '*' on GET, got %q", origin)
+	}
+}

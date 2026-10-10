@@ -55,6 +55,8 @@ func (p *CUPSPrinter) Print(ctx context.Context, printerName string, filePath st
 		"-o", "EPIJ_CMat=3",
 		"-o", "EPIJ_AFil=1",
 		"-o", "fit-to-page",
+		"-o", "page-left=0",
+		"-o", "page-right=0",
 		filePath,
 	}
 

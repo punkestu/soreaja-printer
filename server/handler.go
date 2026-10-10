@@ -36,13 +36,30 @@ func NewServer(cfg *config.Config, printerService printer.Service) *Server {
 	}
 }
 
+// corsMiddleware adds CORS headers allowing all origins, methods, and headers.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Routes initializes and returns the HTTP router.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/print", s.handlePrint)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/api/v1/health", s.handleHealth)
-	return mux
+	return corsMiddleware(mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
