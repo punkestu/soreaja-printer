@@ -6,21 +6,28 @@ import (
 	"fmt"
 	"image"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 	"net"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/image/draw"
+
+	"soreaja-printer/printer"
+
 	soreaja "github.com/punkestu/soreaja-thermal"
 	"github.com/punkestu/soreaja-thermal/pkg/escpos"
-	"soreaja-printer/printer"
 )
 
 const (
-	// DefaultThermalWidth is the standard printable pixel width for 58mm thermal printers (384 dots).
-	DefaultThermalWidth = 384
+	// ThermalWidth58mm is the standard printable pixel width for 58mm thermal printers (384 dots).
+	ThermalWidth58mm = 384
+	// ThermalWidth80mm is the standard printable pixel width for 80mm thermal printers (576 dots).
+	ThermalWidth80mm = 576
+	// DefaultThermalWidth is set to 80mm format (576 dots).
+	DefaultThermalWidth = ThermalWidth80mm
 )
 
 // ThermalPrinter encodes and sends print jobs using soreaja-thermal Bluetooth transport or direct ESC/POS raster writing.
@@ -28,6 +35,7 @@ type ThermalPrinter struct {
 	PrintableWidth int
 	DefaultMAC     string
 	mu             sync.Mutex
+	printerClient  *soreaja.Client
 }
 
 // NewThermalPrinter creates a new instance of ThermalPrinter with optional default MAC address.
@@ -36,10 +44,21 @@ func NewThermalPrinter(defaultMAC ...string) *ThermalPrinter {
 	if len(defaultMAC) > 0 {
 		mac = defaultMAC[0]
 	}
-	return &ThermalPrinter{
+	tp := &ThermalPrinter{
 		PrintableWidth: DefaultThermalWidth,
 		DefaultMAC:     mac,
 	}
+	if mac != "" {
+		go func() {
+			client, err := soreaja.Connect(mac, 1)
+			if err == nil {
+				tp.mu.Lock()
+				tp.printerClient = client
+				tp.mu.Unlock()
+			}
+		}()
+	}
+	return tp
 }
 
 // Print converts the file at filePath into ESC/POS commands and sends it to the target thermal printer.
@@ -69,6 +88,10 @@ func (t *ThermalPrinter) Print(ctx context.Context, printerTarget string, filePa
 
 // printViaSoreaja connects to the printer via Bluetooth MAC address using github.com/punkestu/soreaja-thermal.
 func (t *ThermalPrinter) printViaSoreaja(ctx context.Context, macAddress string, filePath string) (string, error) {
+	// Pre-scale image to 80mm format before sending to printer
+	printFilePath, cleanup := t.prepareScaledImageFile(filePath)
+	defer cleanup()
+
 	type printResult struct {
 		jobID string
 		err   error
@@ -77,20 +100,24 @@ func (t *ThermalPrinter) printViaSoreaja(ctx context.Context, macAddress string,
 	resCh := make(chan printResult, 1)
 
 	go func() {
-		client, err := soreaja.Connect(macAddress, 1)
-		if err != nil {
-			resCh <- printResult{err: fmt.Errorf("failed to connect to thermal printer at %s: %w", macAddress, err)}
-			return
+		client := t.printerClient
+		if client == nil || !client.IsConnected() {
+			var err error
+			client, err = soreaja.Connect(macAddress, 1)
+			if err != nil {
+				resCh <- printResult{err: fmt.Errorf("failed to connect to thermal printer at %s: %w", macAddress, err)}
+				return
+			}
+			t.printerClient = client
 		}
-		defer client.Disconnect()
 
 		_ = client.Init()
 
 		// Attempt to print as image first
-		imgErr := client.PrintImage(filePath, t.PrintableWidth, true)
+		imgErr := client.PrintImage(printFilePath, t.PrintableWidth, true)
 		if imgErr != nil {
 			// If image rasterizing fails, attempt printing as raw text
-			raw, readErr := os.ReadFile(filePath)
+			raw, readErr := os.ReadFile(printFilePath)
 			if readErr != nil {
 				resCh <- printResult{err: fmt.Errorf("failed to read print file: %v (image decode: %v)", readErr, imgErr)}
 				return
@@ -101,8 +128,8 @@ func (t *ThermalPrinter) printViaSoreaja(ctx context.Context, macAddress string,
 			}
 		}
 
-		_ = client.Feed(3)
-		_ = client.CutPaper(3)
+		_ = client.Feed(1)
+		_ = client.CutPaper(1)
 
 		resCh <- printResult{jobID: fmt.Sprintf("thermal-mac-%d", time.Now().UnixNano())}
 	}()
@@ -117,7 +144,11 @@ func (t *ThermalPrinter) printViaSoreaja(ctx context.Context, macAddress string,
 
 // printViaDirectIO handles writing ESC/POS raster chunks directly to a device path, file, or network socket.
 func (t *ThermalPrinter) printViaDirectIO(ctx context.Context, dest string, filePath string) (string, error) {
-	chunks, err := escpos.RasterizeFile(filePath, t.PrintableWidth, true)
+	// Pre-scale image to 80mm format before rasterizing
+	printFilePath, cleanup := t.prepareScaledImageFile(filePath)
+	defer cleanup()
+
+	chunks, err := escpos.RasterizeFile(printFilePath, t.PrintableWidth, true)
 	var payload []byte
 	if err == nil && len(chunks) > 0 {
 		var buf bytes.Buffer
@@ -130,7 +161,7 @@ func (t *ThermalPrinter) printViaDirectIO(ctx context.Context, dest string, file
 		payload = buf.Bytes()
 	} else {
 		// Plain text or raw bytes fallback
-		raw, readErr := os.ReadFile(filePath)
+		raw, readErr := os.ReadFile(printFilePath)
 		if readErr != nil {
 			return "", readErr
 		}
@@ -148,14 +179,76 @@ func (t *ThermalPrinter) printViaDirectIO(ctx context.Context, dest string, file
 	return fmt.Sprintf("thermal-%d", time.Now().UnixNano()), nil
 }
 
+// ScaleImageToWidth resizes an image to the target width while preserving the original aspect ratio.
+func ScaleImageToWidth(src image.Image, targetWidth int) image.Image {
+	bounds := src.Bounds()
+	srcW := bounds.Dx()
+	srcH := bounds.Dy()
+	if srcW <= 0 || srcH <= 0 {
+		return src
+	}
+
+	targetH := int(float64(srcH) * float64(targetWidth) / float64(srcW))
+	if targetH <= 0 {
+		targetH = 1
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, targetWidth, targetH))
+	draw.BiLinear.Scale(dst, dst.Bounds(), src, bounds, draw.Over, nil)
+	return dst
+}
+
+// prepareScaledImageFile scales the image at filePath to the configured thermal width (80mm / 576 dots)
+// and returns the path to the scaled image file along with a cleanup closure.
+func (t *ThermalPrinter) prepareScaledImageFile(filePath string) (string, func()) {
+	noOpCleanup := func() {}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return filePath, noOpCleanup
+	}
+	defer file.Close()
+
+	img, _, err := image.Decode(file)
+	if err != nil {
+		// Not an image file (e.g. plain text or raw bytes), keep original
+		return filePath, noOpCleanup
+	}
+
+	targetW := t.PrintableWidth
+	if targetW <= 0 {
+		targetW = ThermalWidth80mm
+	}
+
+	scaledImg := ScaleImageToWidth(img, targetW)
+
+	tmpFile, err := os.CreateTemp("", "thermal-80mm-scaled-*.png")
+	if err != nil {
+		return filePath, noOpCleanup
+	}
+
+	if err := png.Encode(tmpFile, scaledImg); err != nil {
+		tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+		return filePath, noOpCleanup
+	}
+	tmpFile.Close()
+
+	cleanup := func() {
+		_ = os.Remove(tmpFile.Name())
+	}
+	return tmpFile.Name(), cleanup
+}
+
 // ImageToESCPOS converts an image.Image into ESC/POS raster bit image commands using soreaja-thermal escpos engine.
 func (t *ThermalPrinter) ImageToESCPOS(src image.Image) ([]byte, error) {
 	targetW := t.PrintableWidth
 	if targetW <= 0 || targetW%8 != 0 {
-		targetW = DefaultThermalWidth
+		targetW = ThermalWidth80mm
 	}
 
-	chunks := escpos.RasterizeImage(src, targetW, true, 128)
+	scaledSrc := ScaleImageToWidth(src, targetW)
+	chunks := escpos.RasterizeImage(scaledSrc, targetW, true, 128)
 	if len(chunks) == 0 {
 		return nil, fmt.Errorf("failed to encode ESC/POS image: empty raster output")
 	}

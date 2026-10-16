@@ -19,6 +19,23 @@ func TestThermalPrinter_DefaultMAC(t *testing.T) {
 	if p.DefaultMAC != mac {
 		t.Fatalf("Expected DefaultMAC to be %s, got %s", mac, p.DefaultMAC)
 	}
+	if p.PrintableWidth != ThermalWidth80mm {
+		t.Fatalf("Expected PrintableWidth to be %d (80mm), got %d", ThermalWidth80mm, p.PrintableWidth)
+	}
+}
+
+func TestScaleImageToWidth_80mm(t *testing.T) {
+	src := createTestImage(100, 50)
+	scaled := ScaleImageToWidth(src, ThermalWidth80mm)
+
+	bounds := scaled.Bounds()
+	if bounds.Dx() != ThermalWidth80mm {
+		t.Errorf("Expected width %d, got %d", ThermalWidth80mm, bounds.Dx())
+	}
+	expectedHeight := 288 // 50 * 576 / 100
+	if bounds.Dy() != expectedHeight {
+		t.Errorf("Expected proportional height %d, got %d", expectedHeight, bounds.Dy())
+	}
 }
 
 func createTestImage(w, h int) image.Image {

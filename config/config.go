@@ -35,7 +35,7 @@ func Load() *Config {
 
 	defaultThermalPrinterMAC := os.Getenv("DEFAULT_THERMAL_PRINTER_MAC")
 	if defaultThermalPrinterMAC == "" {
-		defaultThermalPrinterMAC = os.Getenv("THERMAL_PRINTER_MAC")
+		defaultThermalPrinterMAC = "86:67:7A:7C:0A:56"
 	}
 
 	maxUploadBytes := int64(10 << 20) // 10MB default

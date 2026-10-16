@@ -1,2 +1,4 @@
 github.com/punkestu/soreaja-thermal v0.0.0-20261016165730-e2c488a49e4b h1:Awl8B9LIa3LGkZgbpV/HWZfksjEFnOFzZ5usEaQ6XQ0=
 github.com/punkestu/soreaja-thermal v0.0.0-20261016165730-e2c488a49e4b/go.mod h1:9WB8CiulL2fGpsHYIjFCAISaV2S9JMKi1hwW4Hbust0=
+golang.org/x/image v0.24.0 h1:AN7zRgVsbvmTfNyqIbbOraYL8mSwcKncEj8ofjgzcMQ=
+golang.org/x/image v0.24.0/go.mod h1:4b/ITuLfqYq1hqZcjofwctIhi7sZh2WaCjvsBNjjya8=
