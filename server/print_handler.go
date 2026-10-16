@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,68 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"soreaja-printer/config"
 	"soreaja-printer/printer"
 )
-
-// Response represents standard API JSON output.
-type Response struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
-	JobID   string `json:"job_id,omitempty"`
-}
-
-// Server handles HTTP requests for the print service.
-type Server struct {
-	cfg            *config.Config
-	printerService printer.Service
-}
-
-// NewServer creates a new instance of the Server.
-func NewServer(cfg *config.Config, printerService printer.Service) *Server {
-	return &Server{
-		cfg:            cfg,
-		printerService: printerService,
-	}
-}
-
-// corsMiddleware adds CORS headers allowing all origins, methods, and headers.
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
-		w.Header().Set("Access-Control-Expose-Headers", "*")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-// Routes initializes and returns the HTTP router.
-func (s *Server) Routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/print", s.handlePrint)
-	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/api/v1/health", s.handleHealth)
-	return corsMiddleware(mux)
-}
-
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-	writeJSONResponse(w, http.StatusOK, Response{
-		Status:  "ok",
-		Message: "soreaja-printer service is healthy",
-	})
-}
 
 func (s *Server) handlePrint(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -87,14 +28,46 @@ func (s *Server) handlePrint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Resolve & sanitize printer destination
-	printerName := r.FormValue("printer")
-	if printerName == "" {
-		printerName = s.cfg.DefaultPrinterName
+	// 2. Resolve printer target and routing logic:
+	// - If printer string is empty -> default to thermal
+	// - If printer name is "thermal" -> print with thermal
+	// - Else -> use color printer
+	printerParam := strings.TrimSpace(r.FormValue("printer"))
+
+	var (
+		targetPrinter  string
+		useThermal     bool
+		targetService  printer.Service
+		printerTypeStr string
+	)
+
+	if printerParam == "" || strings.EqualFold(printerParam, "thermal") {
+		useThermal = true
+		if s.cfg.DefaultThermalPrinterMAC != "" {
+			targetPrinter = s.cfg.DefaultThermalPrinterMAC
+		} else {
+			targetPrinter = s.cfg.DefaultThermalPrinterName
+		}
+		targetService = s.thermalPrinter
+		printerTypeStr = "thermal"
+	} else if printer.IsMACAddress(printerParam) {
+		useThermal = true
+		targetPrinter = printerParam
+		targetService = s.thermalPrinter
+		printerTypeStr = "thermal"
+	} else {
+		useThermal = false
+		if strings.EqualFold(printerParam, "color") {
+			targetPrinter = s.cfg.DefaultColorPrinterName
+		} else {
+			targetPrinter = printerParam
+		}
+		targetService = s.colorPrinter
+		printerTypeStr = "color"
 	}
 
-	if err := printer.ValidatePrinterName(printerName); err != nil {
-		log.Printf("[WARN] Invalid printer name provided: '%s'", printerName)
+	if err := printer.ValidatePrinterName(targetPrinter); err != nil {
+		log.Printf("[WARN] Invalid printer name provided: '%s'", targetPrinter)
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -138,7 +111,11 @@ func (s *Server) handlePrint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Create secure temporary file
-	tempFile, err := os.CreateTemp("", fmt.Sprintf("print-*%s", fileExt))
+	prefix := "color-print-*"
+	if useThermal {
+		prefix = "thermal-print-*"
+	}
+	tempFile, err := os.CreateTemp("", fmt.Sprintf("%s%s", prefix, fileExt))
 	if err != nil {
 		log.Printf("[ERROR] Failed to create temp file: %v", err)
 		writeJSONError(w, http.StatusInternalServerError, "Failed to initialize temporary print file")
@@ -172,32 +149,19 @@ func (s *Server) handlePrint(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.PrintTimeout)
 	defer cancel()
 
-	log.Printf("[INFO] Sending job for %s to printer '%s'", filepath.Base(tempFilePath), printerName)
-	jobID, err := s.printerService.Print(ctx, printerName, tempFilePath)
+	log.Printf("[INFO] Sending job for %s to %s printer '%s'", filepath.Base(tempFilePath), printerTypeStr, targetPrinter)
+	jobID, err := targetService.Print(ctx, targetPrinter, tempFilePath)
 	if err != nil {
-		log.Printf("[ERROR] Print execution failed for printer '%s': %v", printerName, err)
+		log.Printf("[ERROR] %s print execution failed for printer '%s': %v", printerTypeStr, targetPrinter, err)
 		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Print job failed: %v", err))
 		return
 	}
 
 	// 7. Success response
-	log.Printf("[INFO] Print job successfully submitted: %s", jobID)
+	log.Printf("[INFO] Print job successfully submitted to %s printer: %s", printerTypeStr, jobID)
 	writeJSONResponse(w, http.StatusOK, Response{
 		Status:  "success",
 		Message: "Job sent to printer successfully",
 		JobID:   jobID,
 	})
-}
-
-func writeJSONError(w http.ResponseWriter, code int, message string) {
-	writeJSONResponse(w, code, Response{
-		Status:  "error",
-		Message: message,
-	})
-}
-
-func writeJSONResponse(w http.ResponseWriter, code int, resp Response) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(resp)
 }

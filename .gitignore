@@ -1,5 +1,6 @@
 # Binaries
 soreaja-printer
+main
 *.exe
 *.exe~
 *.dll
@@ -11,6 +12,11 @@ soreaja-printer
 
 # Output of the go coverage tool
 *.out
+
+# Certificates / Keys
+*.pem
+*.key
+*.crt
 
 # OS / Editor artifacts
 .DS_Store

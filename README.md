@@ -22,9 +22,11 @@ The microservice can be configured using environment variables:
 | Environment Variable | Description | Default |
 | :--- | :--- | :--- |
 | `SERVER_PORT` | HTTP server listening port | `8080` |
-| `DEFAULT_PRINTER_NAME` | Default printer destination if omitted in request | `EPSON_L120_Series` |
+| `DEFAULT_COLOR_PRINTER_NAME` | Default color printer destination | `EPSON_L120_Series` |
+| `DEFAULT_THERMAL_PRINTER_NAME`| Default thermal printer destination (fallback) | `/dev/cu.RPP02N` |
+| `THERMAL_PRINTER_MAC` | Bluetooth MAC address for ESC/POS thermal printer | `""` |
 | `MAX_UPLOAD_SIZE_BYTES` | Maximum allowed request payload size in bytes | `10485760` (10MB) |
-| `PRINT_TIMEOUT_SECONDS` | Maximum duration before aborting an `lp` execution | `30` |
+| `PRINT_TIMEOUT_SECONDS` | Maximum duration before aborting print execution | `30` |
 
 ---
 
@@ -33,26 +35,26 @@ The microservice can be configured using environment variables:
 ### Prerequisites
 
 1. **Go 1.22+** installed.
-2. **CUPS** running with your target printer queue configured:
-   ```bash
-   lpstat -p -d
-   ```
-3. Permissions: The user running the binary must have permissions to submit print jobs (e.g. member of `lp` or `lpadmin` group).
+2. For CUPS color printing: target printer queue configured (`lpstat -p -d`).
+3. For thermal printing: Bluetooth thermal printer paired or device attached.
 
-### Running Locally
+### Running with Makefile
 
 ```bash
 # Clone and enter the repository
 cd soreaja-printer
 
 # Run tests
-go test -v ./...
+make test
 
-# Build the executable
-go build -o soreaja-printer .
+# Build executable
+make build
 
-# Start the server
-./soreaja-printer
+# Run microservice directly
+make run
+
+# Clean build artifacts
+make clean
 ```
 
 ---
@@ -68,7 +70,7 @@ go build -o soreaja-printer .
 | Field | Type | Description | Required |
 | :--- | :--- | :--- | :--- |
 | `image` | Binary File | Image file (`image/jpeg` or `image/png`) | **Yes** |
-| `printer` | String | Target CUPS printer name (alphanumeric, `_`, `-`) | No (defaults to `DEFAULT_PRINTER_NAME`) |
+| `printer` | String | Target CUPS printer name or keyword (`thermal`, `color`, or specific queue name). Defaults to thermal printer if omitted. | No |
 
 #### Example Request:
 ```bash

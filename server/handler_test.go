@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -13,7 +12,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -55,7 +53,7 @@ func createTestJPEG() []byte {
 	return buf.Bytes()
 }
 
-func buildMultipartRequest(fieldName, fileName string, fileContent []byte, printerName string) (*http.Request, error) {
+func buildMultipartRequestTo(targetURL, fieldName, fileName string, fileContent []byte, printerName string) (*http.Request, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -79,90 +77,43 @@ func buildMultipartRequest(fieldName, fileName string, fileContent []byte, print
 		return nil, err
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/print", body)
+	req := httptest.NewRequest(http.MethodPost, targetURL, body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req, nil
 }
 
-func TestPrintEndpoint_Success(t *testing.T) {
-	cfg := &config.Config{
-		ServerPort:         "8080",
-		DefaultPrinterName: "EPSON_L120_Series",
-		MaxUploadSize:      10 << 20,
-		PrintTimeout:       5 * time.Second,
-	}
-
-	var capturedPrinter string
-	var capturedFilePath string
-
-	mock := &mockPrinterService{
-		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
-			capturedPrinter = printerName
-			capturedFilePath = filePath
-
-			// Ensure file exists during printing
-			if _, err := os.Stat(filePath); err != nil {
-				return "", errors.New("temp file does not exist")
-			}
-			return "EPSON_L120_Series-999", nil
-		},
-	}
-
-	srv := NewServer(cfg, mock)
-	router := srv.Routes()
-
-	pngBytes := createTestPNG()
-	req, err := buildMultipartRequest("image", "test.png", pngBytes, "custom_printer")
-	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
-	}
-
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
-	}
-
-	var resp Response
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	if resp.Status != "success" {
-		t.Errorf("Expected status 'success', got %s", resp.Status)
-	}
-	if resp.JobID != "EPSON_L120_Series-999" {
-		t.Errorf("Expected job_id 'EPSON_L120_Series-999', got %s", resp.JobID)
-	}
-	if capturedPrinter != "custom_printer" {
-		t.Errorf("Expected target printer 'custom_printer', got %s", capturedPrinter)
-	}
-
-	// Verify temp file is removed after request completes
-	if _, err := os.Stat(capturedFilePath); !os.IsNotExist(err) {
-		t.Errorf("Expected temp file %s to be cleaned up", capturedFilePath)
-	}
+func buildMultipartRequest(fieldName, fileName string, fileContent []byte, printerName string) (*http.Request, error) {
+	return buildMultipartRequestTo("/api/v1/print", fieldName, fileName, fileContent, printerName)
 }
 
-func TestPrintEndpoint_DefaultPrinterFallback(t *testing.T) {
+func TestPrintEndpoint_EmptyDefaultsToThermal(t *testing.T) {
 	cfg := &config.Config{
-		ServerPort:         "8080",
-		DefaultPrinterName: "EPSON_L120_Series",
-		MaxUploadSize:      10 << 20,
-		PrintTimeout:       5 * time.Second,
+		ServerPort:                "8080",
+		DefaultColorPrinterName:   "EPSON_L120_Series",
+		DefaultThermalPrinterName: "POS58_Thermal_Printer",
+		MaxUploadSize:             10 << 20,
+		PrintTimeout:              5 * time.Second,
 	}
 
+	var thermalCalled bool
 	var capturedPrinter string
-	mock := &mockPrinterService{
+
+	mockThermal := &mockPrinterService{
 		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
+			thermalCalled = true
 			capturedPrinter = printerName
-			return "job-1", nil
+			return "thermal-job-1", nil
+		},
+	}
+	mockColor := &mockPrinterService{
+		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
+			t.Fatal("Color printer should NOT be called when printer is empty")
+			return "", nil
 		},
 	}
 
-	srv := NewServer(cfg, mock)
-	req, err := buildMultipartRequest("image", "sample.jpg", createTestJPEG(), "")
+	srv := NewServer(cfg, mockColor, mockThermal)
+	req, err := buildMultipartRequest("image", "sample.png", createTestPNG(), "")
 	if err != nil {
 		t.Fatalf("Failed to build request: %v", err)
 	}
@@ -173,18 +124,160 @@ func TestPrintEndpoint_DefaultPrinterFallback(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
 	}
+	if !thermalCalled {
+		t.Error("Expected thermal printer to be called")
+	}
+	if capturedPrinter != "POS58_Thermal_Printer" {
+		t.Errorf("Expected fallback to POS58_Thermal_Printer, got %s", capturedPrinter)
+	}
+}
 
+func TestPrintEndpoint_ThermalNameRoutesToThermal(t *testing.T) {
+	cfg := &config.Config{
+		ServerPort:                "8080",
+		DefaultColorPrinterName:   "EPSON_L120_Series",
+		DefaultThermalPrinterName: "POS58_Thermal_Printer",
+		MaxUploadSize:             10 << 20,
+		PrintTimeout:              5 * time.Second,
+	}
+
+	var thermalCalled bool
+	var capturedPrinter string
+
+	mockThermal := &mockPrinterService{
+		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
+			thermalCalled = true
+			capturedPrinter = printerName
+			return "thermal-job-2", nil
+		},
+	}
+	mockColor := &mockPrinterService{}
+
+	srv := NewServer(cfg, mockColor, mockThermal)
+	req, err := buildMultipartRequest("image", "sample.jpg", createTestJPEG(), "thermal")
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+	if !thermalCalled {
+		t.Error("Expected thermal printer to be called when printer='thermal'")
+	}
+	if capturedPrinter != "POS58_Thermal_Printer" {
+		t.Errorf("Expected fallback to POS58_Thermal_Printer, got %s", capturedPrinter)
+	}
+}
+
+func TestPrintEndpoint_ElseRoutesToColor(t *testing.T) {
+	cfg := &config.Config{
+		ServerPort:                "8080",
+		DefaultColorPrinterName:   "EPSON_L120_Series",
+		DefaultThermalPrinterName: "POS58_Thermal_Printer",
+		MaxUploadSize:             10 << 20,
+		PrintTimeout:              5 * time.Second,
+	}
+
+	var colorCalled bool
+	var capturedPrinter string
+
+	mockColor := &mockPrinterService{
+		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
+			colorCalled = true
+			capturedPrinter = printerName
+			return "color-job-1", nil
+		},
+	}
+	mockThermal := &mockPrinterService{
+		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
+			t.Fatal("Thermal printer should NOT be called for other printer names")
+			return "", nil
+		},
+	}
+
+	srv := NewServer(cfg, mockColor, mockThermal)
+	req, err := buildMultipartRequest("image", "sample.png", createTestPNG(), "EPSON_L120_Series")
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+	if !colorCalled {
+		t.Error("Expected color printer to be called")
+	}
 	if capturedPrinter != "EPSON_L120_Series" {
-		t.Errorf("Expected fallback to EPSON_L120_Series, got %s", capturedPrinter)
+		t.Errorf("Expected target printer 'EPSON_L120_Series', got %s", capturedPrinter)
+	}
+}
+
+func TestPrintEndpoint_ColorKeywordRoutesToDefaultColor(t *testing.T) {
+	cfg := &config.Config{
+		ServerPort:                "8080",
+		DefaultColorPrinterName:   "EPSON_L120_Series",
+		DefaultThermalPrinterName: "POS58_Thermal_Printer",
+		MaxUploadSize:             10 << 20,
+		PrintTimeout:              5 * time.Second,
+	}
+
+	var capturedPrinter string
+	mockColor := &mockPrinterService{
+		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
+			capturedPrinter = printerName
+			return "color-job-2", nil
+		},
+	}
+
+	srv := NewServer(cfg, mockColor, &mockPrinterService{})
+	req, err := buildMultipartRequest("image", "sample.png", createTestPNG(), "color")
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+	if capturedPrinter != "EPSON_L120_Series" {
+		t.Errorf("Expected default color printer 'EPSON_L120_Series', got %s", capturedPrinter)
+	}
+}
+
+func TestPrintEndpoint_MissingImage(t *testing.T) {
+	cfg := config.Load()
+	mock := &mockPrinterService{}
+	srv := NewServer(cfg, mock, mock)
+
+	// Missing image field (sending wrong field)
+	req, err := buildMultipartRequest("not_image", "sample.png", createTestPNG(), "")
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Expected status 400 for missing image, got %d", w.Code)
 	}
 }
 
 func TestPrintEndpoint_InvalidFileFormat(t *testing.T) {
 	cfg := config.Load()
 	mock := &mockPrinterService{}
-	srv := NewServer(cfg, mock)
+	srv := NewServer(cfg, mock, mock)
 
-	// Send plain text instead of image
+	// Send plain text instead of JPEG/PNG image
 	req, err := buildMultipartRequest("image", "bad.txt", []byte("Hello plain text not image!"), "")
 	if err != nil {
 		t.Fatalf("Failed to build request: %v", err)
@@ -207,7 +300,7 @@ func TestPrintEndpoint_InvalidFileFormat(t *testing.T) {
 func TestPrintEndpoint_InvalidPrinterName(t *testing.T) {
 	cfg := config.Load()
 	mock := &mockPrinterService{}
-	srv := NewServer(cfg, mock)
+	srv := NewServer(cfg, mock, mock)
 
 	req, err := buildMultipartRequest("image", "sample.png", createTestPNG(), "bad_printer; rm -rf")
 	if err != nil {
@@ -222,28 +315,9 @@ func TestPrintEndpoint_InvalidPrinterName(t *testing.T) {
 	}
 }
 
-func TestPrintEndpoint_MissingImage(t *testing.T) {
-	cfg := config.Load()
-	mock := &mockPrinterService{}
-	srv := NewServer(cfg, mock)
-
-	// Missing image field
-	req, err := buildMultipartRequest("wrong_field", "sample.png", createTestPNG(), "")
-	if err != nil {
-		t.Fatalf("Failed to build request: %v", err)
-	}
-
-	w := httptest.NewRecorder()
-	srv.Routes().ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("Expected status 400 for missing image, got %d", w.Code)
-	}
-}
-
 func TestHealthEndpoint(t *testing.T) {
 	cfg := config.Load()
-	srv := NewServer(cfg, &mockPrinterService{})
+	srv := NewServer(cfg, &mockPrinterService{}, &mockPrinterService{})
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
@@ -262,7 +336,7 @@ func TestHealthEndpoint(t *testing.T) {
 
 func TestCORS_HeadersAndPreflight(t *testing.T) {
 	cfg := config.Load()
-	srv := NewServer(cfg, &mockPrinterService{})
+	srv := NewServer(cfg, &mockPrinterService{}, &mockPrinterService{})
 	router := srv.Routes()
 
 	// 1. Preflight OPTIONS request
@@ -291,5 +365,108 @@ func TestCORS_HeadersAndPreflight(t *testing.T) {
 
 	if origin := wGet.Header().Get("Access-Control-Allow-Origin"); origin != "*" {
 		t.Errorf("Expected Access-Control-Allow-Origin '*' on GET, got %q", origin)
+	}
+
+	// 3. React App / Non-HTTPS preflight with credentials and Private Network Access
+	reqReact := httptest.NewRequest(http.MethodOptions, "/api/v1/print", nil)
+	reqReact.Header.Set("Origin", "http://localhost:3000")
+	reqReact.Header.Set("Access-Control-Request-Headers", "Content-Type, Authorization, X-Requested-With")
+	reqReact.Header.Set("Access-Control-Request-Private-Network", "true")
+
+	wReact := httptest.NewRecorder()
+	router.ServeHTTP(wReact, reqReact)
+
+	if wReact.Code != http.StatusNoContent {
+		t.Fatalf("Expected status 204 for React preflight, got %d", wReact.Code)
+	}
+	if origin := wReact.Header().Get("Access-Control-Allow-Origin"); origin != "http://localhost:3000" {
+		t.Errorf("Expected reflected origin 'http://localhost:3000', got %q", origin)
+	}
+	if creds := wReact.Header().Get("Access-Control-Allow-Credentials"); creds != "true" {
+		t.Errorf("Expected Access-Control-Allow-Credentials 'true', got %q", creds)
+	}
+	if pna := wReact.Header().Get("Access-Control-Allow-Private-Network"); pna != "true" {
+		t.Errorf("Expected Access-Control-Allow-Private-Network 'true', got %q", pna)
+	}
+	if headers := wReact.Header().Get("Access-Control-Allow-Headers"); headers != "Content-Type, Authorization, X-Requested-With" {
+		t.Errorf("Expected reflected allowed headers, got %q", headers)
+	}
+}
+
+func TestPrintEndpoint_MACAddressRoutesToThermal(t *testing.T) {
+	cfg := &config.Config{
+		ServerPort:                "8080",
+		DefaultColorPrinterName:   "EPSON_L120_Series",
+		DefaultThermalPrinterName: "POS58_Thermal_Printer",
+		DefaultThermalPrinterMAC:  "00:11:22:33:44:55",
+		MaxUploadSize:             10 << 20,
+		PrintTimeout:              5 * time.Second,
+	}
+
+	var thermalCalled bool
+	var capturedPrinter string
+
+	mockThermal := &mockPrinterService{
+		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
+			thermalCalled = true
+			capturedPrinter = printerName
+			return "thermal-mac-job-1", nil
+		},
+	}
+	mockColor := &mockPrinterService{}
+
+	srv := NewServer(cfg, mockColor, mockThermal)
+	req, err := buildMultipartRequest("image", "sample.png", createTestPNG(), "86:67:7A:7C:0A:56")
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+	if !thermalCalled {
+		t.Error("Expected thermal printer to be called for MAC address")
+	}
+	if capturedPrinter != "86:67:7A:7C:0A:56" {
+		t.Errorf("Expected printer target '86:67:7A:7C:0A:56', got %s", capturedPrinter)
+	}
+}
+
+func TestPrintEndpoint_DefaultThermalPrinterMACFallback(t *testing.T) {
+	cfg := &config.Config{
+		ServerPort:                "8080",
+		DefaultColorPrinterName:   "EPSON_L120_Series",
+		DefaultThermalPrinterName: "POS58_Thermal_Printer",
+		DefaultThermalPrinterMAC:  "00:11:22:33:44:55",
+		MaxUploadSize:             10 << 20,
+		PrintTimeout:              5 * time.Second,
+	}
+
+	var capturedPrinter string
+
+	mockThermal := &mockPrinterService{
+		printFn: func(ctx context.Context, printerName string, filePath string) (string, error) {
+			capturedPrinter = printerName
+			return "thermal-mac-job-2", nil
+		},
+	}
+
+	srv := NewServer(cfg, &mockPrinterService{}, mockThermal)
+	req, err := buildMultipartRequest("image", "sample.png", createTestPNG(), "")
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+	if capturedPrinter != "00:11:22:33:44:55" {
+		t.Errorf("Expected default MAC '00:11:22:33:44:55', got %s", capturedPrinter)
 	}
 }

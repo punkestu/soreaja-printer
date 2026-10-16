@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,14 +13,46 @@ import (
 	"time"
 
 	"soreaja-printer/config"
-	"soreaja-printer/printer"
+	"soreaja-printer/printer/color"
+	"soreaja-printer/printer/thermal"
 	"soreaja-printer/server"
 )
 
+func getLocalIPv4s() []string {
+	var ips []string
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ips
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+	return ips
+}
+
 func main() {
 	cfg := config.Load()
-	printerService := printer.NewCUPSPrinter()
-	srv := server.NewServer(cfg, printerService)
+	colorPrinterService := color.NewColorPrinter()
+	thermalPrinterService := thermal.NewThermalPrinter(cfg.DefaultThermalPrinterMAC)
+	srv := server.NewServer(cfg, colorPrinterService, thermalPrinterService)
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
@@ -35,7 +68,15 @@ func main() {
 
 	go func() {
 		log.Printf("Starting soreaja-printer microservice on port :%s", cfg.ServerPort)
-		log.Printf("Default printer configured: %s", cfg.DefaultPrinterName)
+		log.Printf("  -> Local:   http://localhost:%s", cfg.ServerPort)
+		for _, ip := range getLocalIPv4s() {
+			log.Printf("  -> Network: http://%s:%s", ip, cfg.ServerPort)
+		}
+		log.Printf("Default color printer: %s", cfg.DefaultColorPrinterName)
+		log.Printf("Default thermal printer: %s", cfg.DefaultThermalPrinterName)
+		if cfg.DefaultThermalPrinterMAC != "" {
+			log.Printf("Default thermal printer MAC: %s", cfg.DefaultThermalPrinterMAC)
+		}
 		log.Printf("Max upload payload size: %d bytes (~%.2f MB)", cfg.MaxUploadSize, float64(cfg.MaxUploadSize)/(1024*1024))
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("HTTP server failed: %v", err)

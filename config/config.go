@@ -8,10 +8,12 @@ import (
 
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
-	ServerPort         string
-	DefaultPrinterName string
-	MaxUploadSize      int64 // in bytes
-	PrintTimeout       time.Duration
+	ServerPort                string
+	DefaultColorPrinterName   string
+	DefaultThermalPrinterName string
+	DefaultThermalPrinterMAC  string
+	MaxUploadSize             int64 // in bytes
+	PrintTimeout              time.Duration
 }
 
 // Load reads configuration from environment variables, falling back to sensible defaults.
@@ -21,9 +23,19 @@ func Load() *Config {
 		port = "8080"
 	}
 
-	defaultPrinter := os.Getenv("DEFAULT_PRINTER_NAME")
-	if defaultPrinter == "" {
-		defaultPrinter = "EPSON_L120_Series"
+	defaultColorPrinter := os.Getenv("DEFAULT_COLOR_PRINTER_NAME")
+	if defaultColorPrinter == "" {
+		defaultColorPrinter = "EPSON_L120_Series"
+	}
+
+	defaultThermalPrinter := os.Getenv("DEFAULT_THERMAL_PRINTER_NAME")
+	if defaultThermalPrinter == "" {
+		defaultThermalPrinter = "/dev/cu.RPP02N"
+	}
+
+	defaultThermalPrinterMAC := os.Getenv("DEFAULT_THERMAL_PRINTER_MAC")
+	if defaultThermalPrinterMAC == "" {
+		defaultThermalPrinterMAC = os.Getenv("THERMAL_PRINTER_MAC")
 	}
 
 	maxUploadBytes := int64(10 << 20) // 10MB default
@@ -41,9 +53,11 @@ func Load() *Config {
 	}
 
 	return &Config{
-		ServerPort:         port,
-		DefaultPrinterName: defaultPrinter,
-		MaxUploadSize:      maxUploadBytes,
-		PrintTimeout:       timeout,
+		ServerPort:                port,
+		DefaultColorPrinterName:   defaultColorPrinter,
+		DefaultThermalPrinterName: defaultThermalPrinter,
+		DefaultThermalPrinterMAC:  defaultThermalPrinterMAC,
+		MaxUploadSize:             maxUploadBytes,
+		PrintTimeout:              timeout,
 	}
 }
