@@ -18,6 +18,27 @@ import (
 	"soreaja-printer/printer"
 )
 
+// terminalTheme provides high-contrast terminal styling with pitch-black background and bright neon-green text.
+type terminalTheme struct {
+	fyne.Theme
+}
+
+func (t *terminalTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	switch name {
+	case theme.ColorNameBackground, theme.ColorNameInputBackground:
+		return color.RGBA{R: 10, G: 12, B: 16, A: 255} // Deep black background
+	case theme.ColorNameForeground, theme.ColorNameDisabled:
+		return color.RGBA{R: 57, G: 255, B: 20, A: 255} // High-contrast neon green (#39FF14)
+	case theme.ColorNameInputBorder:
+		return color.RGBA{R: 24, G: 60, B: 24, A: 255} // Subtle dark-green border
+	case theme.ColorNameSelection:
+		return color.RGBA{R: 20, G: 100, B: 20, A: 160} // Dark green selection highlight
+	case theme.ColorNameScrollBar:
+		return color.RGBA{R: 35, G: 120, B: 35, A: 220} // Terminal green scrollbar
+	}
+	return t.Theme.Color(name, variant)
+}
+
 // RunApp initializes and runs the Fyne desktop GUI window.
 func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter printer.Service, logStream *LogStream) {
 	a := app.NewWithID("com.soreaja.printer")
@@ -39,10 +60,26 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 	portEntry.SetText(cfg.ServerPort)
 	portEntry.SetPlaceHolder("8080")
 
-	endpointsBox := widget.NewMultiLineEntry()
-	endpointsBox.Wrapping = fyne.TextWrapWord
-	endpointsBox.Disable()
-	endpointsBox.SetText("Local:   http://localhost:" + cfg.ServerPort + "\nHealth:  http://localhost:" + cfg.ServerPort + "/health")
+	endpointsLabel := widget.NewLabel("Local:   http://localhost:" + cfg.ServerPort + "\nHealth:  http://localhost:" + cfg.ServerPort + "/health")
+	endpointsLabel.TextStyle = fyne.TextStyle{Monospace: true}
+	endpointsLabel.Wrapping = fyne.TextWrapWord
+	endpointsLabel.Selectable = true
+
+	endpointsBg := canvas.NewRectangle(color.RGBA{R: 10, G: 12, B: 16, A: 255})
+	endpointsBox := container.NewThemeOverride(
+		container.NewStack(endpointsBg, container.NewPadded(endpointsLabel)),
+		&terminalTheme{Theme: theme.DefaultTheme()},
+	)
+
+	copyEndpointsBtn := widget.NewButtonWithIcon("Copy All", theme.ContentCopyIcon(), func() {
+		w.Clipboard().SetContent(endpointsLabel.Text)
+	})
+	copyEndpointsBtn.Importance = widget.LowImportance
+
+	endpointsHeader := container.NewBorder(nil, nil,
+		widget.NewLabelWithStyle("Service Endpoints:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		copyEndpointsBtn,
+	)
 
 	var toggleBtn *widget.Button
 
@@ -64,7 +101,7 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 					sb.WriteString(addr + "\n")
 				}
 				sb.WriteString(fmt.Sprintf("API:     http://localhost:%s/api/v1/print", serverMgr.ActivePort()))
-				endpointsBox.SetText(sb.String())
+				endpointsLabel.SetText(sb.String())
 			} else {
 				statusDot.FillColor = color.RGBA{R: 220, G: 50, B: 50, A: 255}
 				statusDot.Refresh()
@@ -116,7 +153,7 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 		),
 		statusMsgLabel,
 		container.NewBorder(nil, nil, widget.NewLabel("HTTP Port:"), toggleBtn, portEntry),
-		widget.NewLabelWithStyle("Service Endpoints:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		endpointsHeader,
 		endpointsBox,
 	)
 
@@ -126,9 +163,26 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 	colorQueueEntry.SetText(cfg.DefaultColorPrinterName)
 	colorQueueEntry.SetPlaceHolder("EPSON_L120_Series")
 
-	colorStatusResult := widget.NewMultiLineEntry()
-	colorStatusResult.Disable()
-	colorStatusResult.SetText("Ready for diagnostics. Click below to inspect CUPS or send a test swatch.")
+	colorStatusResult := widget.NewLabel("Ready for diagnostics. Click below to inspect CUPS or send a test swatch.")
+	colorStatusResult.TextStyle = fyne.TextStyle{Monospace: true}
+	colorStatusResult.Wrapping = fyne.TextWrapWord
+	colorStatusResult.Selectable = true
+
+	colorStatusBg := canvas.NewRectangle(color.RGBA{R: 10, G: 12, B: 16, A: 255})
+	colorStatusBox := container.NewThemeOverride(
+		container.NewStack(colorStatusBg, container.NewPadded(colorStatusResult)),
+		&terminalTheme{Theme: theme.DefaultTheme()},
+	)
+
+	copyColorBtn := widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
+		w.Clipboard().SetContent(colorStatusResult.Text)
+	})
+	copyColorBtn.Importance = widget.LowImportance
+
+	colorDiagHeader := container.NewBorder(nil, nil,
+		widget.NewLabelWithStyle("Diagnostic Output:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		copyColorBtn,
+	)
 
 	checkColorBtn := widget.NewButtonWithIcon("Check CUPS Status", theme.SearchIcon(), func() {
 		q := strings.TrimSpace(colorQueueEntry.Text)
@@ -170,8 +224,8 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 		container.NewVBox(
 			container.NewBorder(nil, nil, widget.NewLabel("Printer Queue:"), nil, colorQueueEntry),
 			container.NewGridWithColumns(2, checkColorBtn, testColorPrintBtn),
-			widget.NewLabel("Diagnostic Output:"),
-			colorStatusResult,
+			colorDiagHeader,
+			colorStatusBox,
 		),
 	)
 
@@ -184,9 +238,26 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 	thermalTargetEntry.SetText(targetVal)
 	thermalTargetEntry.SetPlaceHolder("86:67:7A:7C:0A:56 or /dev/cu.RPP02N")
 
-	thermalStatusResult := widget.NewMultiLineEntry()
-	thermalStatusResult.Disable()
-	thermalStatusResult.SetText("Ready for diagnostics. Click below to verify device or print test receipt.")
+	thermalStatusResult := widget.NewLabel("Ready for diagnostics. Click below to verify device or print test receipt.")
+	thermalStatusResult.TextStyle = fyne.TextStyle{Monospace: true}
+	thermalStatusResult.Wrapping = fyne.TextWrapWord
+	thermalStatusResult.Selectable = true
+
+	thermalStatusBg := canvas.NewRectangle(color.RGBA{R: 10, G: 12, B: 16, A: 255})
+	thermalStatusBox := container.NewThemeOverride(
+		container.NewStack(thermalStatusBg, container.NewPadded(thermalStatusResult)),
+		&terminalTheme{Theme: theme.DefaultTheme()},
+	)
+
+	copyThermalBtn := widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
+		w.Clipboard().SetContent(thermalStatusResult.Text)
+	})
+	copyThermalBtn.Importance = widget.LowImportance
+
+	thermalDiagHeader := container.NewBorder(nil, nil,
+		widget.NewLabelWithStyle("Diagnostic Output:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		copyThermalBtn,
+	)
 
 	checkThermalBtn := widget.NewButtonWithIcon("Check Connection", theme.SearchIcon(), func() {
 		target := strings.TrimSpace(thermalTargetEntry.Text)
@@ -228,16 +299,18 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 		container.NewVBox(
 			container.NewBorder(nil, nil, widget.NewLabel("Target (MAC/Path):"), nil, thermalTargetEntry),
 			container.NewGridWithColumns(2, checkThermalBtn, testThermalPrintBtn),
-			widget.NewLabel("Diagnostic Output:"),
-			thermalStatusResult,
+			thermalDiagHeader,
+			thermalStatusBox,
 		),
 	)
 
 	printerTestingTab := container.NewVScroll(
-		container.NewVBox(
-			colorCard,
-			widget.NewSeparator(),
-			thermalCard,
+		container.NewPadded(
+			container.NewVBox(
+				colorCard,
+				widget.NewSeparator(),
+				thermalCard,
+			),
 		),
 	)
 
@@ -254,6 +327,11 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 		logStream.Clear()
 		logsEntry.SetText("")
 	})
+
+	copyLogsBtn := widget.NewButtonWithIcon("Copy All Logs", theme.ContentCopyIcon(), func() {
+		w.Clipboard().SetContent(logsEntry.Text)
+	})
+	copyLogsBtn.Importance = widget.LowImportance
 
 	logStream.RegisterListener(func(line string) {
 		fyne.Do(func() {
@@ -272,14 +350,20 @@ func RunApp(cfg *config.Config, colorPrinter printer.Service, thermalPrinter pri
 	logsControlBar := container.NewHBox(
 		autoScrollCheck,
 		clearLogsBtn,
+		copyLogsBtn,
 	)
+
+	// High-contrast terminal styling: solid black background with vibrant green text
+	terminalBg := canvas.NewRectangle(color.RGBA{R: 10, G: 12, B: 16, A: 255})
+	terminalStack := container.NewStack(terminalBg, logsEntry)
+	themedLogsView := container.NewThemeOverride(terminalStack, &terminalTheme{Theme: theme.DefaultTheme()})
 
 	logsTab := container.NewBorder(
 		logsControlBar,
 		nil,
 		nil,
 		nil,
-		logsEntry,
+		themedLogsView,
 	)
 
 	// ==================== MAIN TABS & WINDOW ====================
