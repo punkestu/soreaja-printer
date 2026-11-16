@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"soreaja-printer/config"
+	"soreaja-printer/gui"
 	"soreaja-printer/printer/color"
 	"soreaja-printer/printer/thermal"
 	"soreaja-printer/server"
@@ -48,11 +51,8 @@ func getLocalIPv4s() []string {
 	return ips
 }
 
-func main() {
-	cfg := config.Load()
-	colorPrinterService := color.NewColorPrinter()
-	thermalPrinterService := thermal.NewThermalPrinter(cfg.DefaultThermalPrinterMAC)
-	srv := server.NewServer(cfg, colorPrinterService, thermalPrinterService)
+func runHeadlessServer(cfg *config.Config, colorSvc *color.ColorPrinter, thermalSvc *thermal.ThermalPrinter) {
+	srv := server.NewServer(cfg, colorSvc, thermalSvc)
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
@@ -67,7 +67,7 @@ func main() {
 	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Starting soreaja-printer microservice on port :%s", cfg.ServerPort)
+		log.Printf("Starting soreaja-printer microservice in headless mode on port :%s", cfg.ServerPort)
 		log.Printf("  -> Local:   http://localhost:%s", cfg.ServerPort)
 		for _, ip := range getLocalIPv4s() {
 			log.Printf("  -> Network: http://%s:%s", ip, cfg.ServerPort)
@@ -97,4 +97,31 @@ func main() {
 	}
 
 	fmt.Println("Server shut down successfully.")
+}
+
+func main() {
+	headlessFlag := flag.Bool("headless", false, "Run in headless CLI server mode (no GUI)")
+	guiFlag := flag.Bool("gui", false, "Explicitly launch the desktop GUI")
+	portFlag := flag.String("port", "", "Override HTTP server port (e.g. 8080)")
+	flag.Parse()
+
+	cfg := config.Load()
+	if *portFlag != "" {
+		cfg.ServerPort = *portFlag
+	}
+
+	// Setup thread-safe in-memory log buffer connected to multiwriter
+	logStream := gui.NewLogStream(1000)
+	log.SetOutput(io.MultiWriter(os.Stdout, logStream))
+
+	colorPrinterService := color.NewColorPrinter()
+	thermalPrinterService := thermal.NewThermalPrinter(cfg.DefaultThermalPrinterMAC)
+
+	if *headlessFlag && !*guiFlag {
+		runHeadlessServer(cfg, colorPrinterService, thermalPrinterService)
+		return
+	}
+
+	// Default behavior: launch Desktop GUI
+	gui.RunApp(cfg, colorPrinterService, thermalPrinterService, logStream)
 }

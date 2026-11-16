@@ -1,7 +1,7 @@
 BINARY_NAME = soreaja-printer
 MAIN_PACKAGE = .
 
-.PHONY: all build run test clean tidy fmt vet
+.PHONY: all build run run-gui run-headless test clean tidy fmt vet
 
 all: build
 
@@ -10,8 +10,14 @@ build:
 	go build -o $(BINARY_NAME) $(MAIN_PACKAGE)
 
 run:
-	@echo "==> Running $(BINARY_NAME)..."
+	@echo "==> Running $(BINARY_NAME) in GUI mode..."
 	go run $(MAIN_PACKAGE)
+
+run-gui: run
+
+run-headless:
+	@echo "==> Running $(BINARY_NAME) in headless mode..."
+	go run $(MAIN_PACKAGE) -headless
 
 test:
 	@echo "==> Running tests..."

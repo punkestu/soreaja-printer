@@ -6,6 +6,7 @@ A lightweight Go microservice that accepts image payloads over HTTP and sends th
 
 ## 🛠 Features
 
+- **Desktop GUI Control Panel:** Native desktop interface (Fyne v2) to start/stop the server in 1 click, view live access logs, and test color & thermal printer connections without terminal commands.
 - **HTTP API:** Simple `multipart/form-data` endpoint `/api/v1/print`.
 - **Image Validation:** Inspects magic bytes (JPEG & PNG supported) and enforces payload size limits.
 - **Security:** Sanitizes printer names against command/argument injection (`^[a-zA-Z0-9_-]+$`).
@@ -38,7 +39,7 @@ The microservice can be configured using environment variables:
 2. For CUPS color printing: target printer queue configured (`lpstat -p -d`).
 3. For thermal printing: Bluetooth thermal printer paired or device attached.
 
-### Running with Makefile
+### Running the Application
 
 ```bash
 # Clone and enter the repository
@@ -50,12 +51,43 @@ make test
 # Build executable
 make build
 
-# Run microservice directly
+# Launch the Desktop GUI (Default)
 make run
+
+# Alternatively run directly via go:
+go run .
+
+# Run in headless CLI server mode (CI / Docker / daemon):
+make run-headless
+# or:
+./soreaja-printer -headless -port 8080
 
 # Clean build artifacts
 make clean
 ```
+
+---
+
+## 🖥️ Desktop GUI Control Panel
+
+The desktop interface provides an interactive workstation for printer operators:
+
+1. **Server Management**:
+   - **Start / Stop Toggle**: In-process HTTP microservice lifecycle control with visual status indicator (🟢 Running / 🔴 Stopped).
+   - **Dynamic Port**: Configurable HTTP listening port (defaults to `8080`).
+   - **Service Endpoints**: Copyable list of detected local and network LAN access URLs.
+2. **Printer Diagnostics**:
+   - **Color Printer (CUPS / Epson)**:
+     - `Check CUPS Status`: Queries CUPS (`lpstat -p`) for printer state (idle, busy, offline).
+     - `Print Test Swatch`: Generates and prints a full-color alignment and CMYK+RGB test pattern.
+   - **Thermal Printer (ESC/POS / Bluetooth)**:
+     - `Check Connection`: Tests reachability for Bluetooth MAC addresses, serial devices (`/dev/...`), or network sockets (`ip:port`).
+     - `Print Test Receipt`: Generates and prints a diagnostic test receipt with banner, timestamp, density grid, feed, and paper cut.
+3. **Live Logs Console**:
+   - Real-time stream of incoming HTTP requests, response status codes, and service logs.
+   - Auto-scroll and 1-click log clearing.
+
+---
 
 ---
 
